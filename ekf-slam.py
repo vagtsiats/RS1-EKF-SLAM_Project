@@ -1,21 +1,96 @@
 import numpy as np
 
-# miu : [x, y, th, lm1x, lm1y, lm2x, lm2y, ... ].T
-# sigma :
-# f  : motion model
-# Jf : motion model derivative
-# h  : observation model
-# Jh : observation model derivative
-# u  : controls = [v, w].T
-# z  : observations = real observations from sensors [x, y, signature] why signature???
-# R  : motion noise
-# Q  : observation noise
-
 MH_DIST_TH = 2.0  # Threshold of Mahalanobis distance for data association.
 STATE_SIZE = 3  # State size [x,y,th]
 LM_SIZE = 2  # LM state size [x,y]
 
 
+# motion model
+# x = [x,y,th].T
+# u = [v,w].T
+def f(x, u, dt=0.1):
+    v = u[0, 0]
+    w = u[1, 0]
+
+    return np.array(
+        [
+            [(v / w) * (-np.sin(x[2, 0]) + np.sin(x[2, 0] + w * dt))],
+            [(v / w) * (np.cos(x[2, 0]) - np.cos(x[2, 0] + w * dt))],
+            [w * dt],
+        ]
+    )
+
+
+# motion model derivative
+# x = [x,y,th].T
+# u = [v,w].T
+def Jf(x, u, dt=0.1):
+    v = u[0, 0]
+    w = u[1, 0]
+
+    arr = np.array(
+        [
+            [(v / w) * (-np.cos(x[2, 0]) + np.cos(x[2, 0] + w * dt))],
+            [(v / w) * (-np.sin(x[2, 0]) + np.sin(x[2, 0] + w * dt))],
+            [0],
+        ]
+    )
+
+    return np.hstack((np.zeros((3, 2)), arr))
+
+
+def angle_dist(b, a):
+    theta = b - a
+    while theta < -np.pi:
+        theta += 2.0 * np.pi
+    while theta > np.pi:
+        theta -= 2.0 * np.pi
+    return theta
+
+
+# observation model
+# x = [x,y,th].T
+# lm = [lmx,lmy].T
+def h(x, lm):
+    d = lm - x[:2, 0]
+    q = d.T @ d
+
+    return np.array([[np.sqrt(q)], [angle_dist(np.arctan2(d[1, 0] - d[0, 0]) - x[2, 0])]])
+
+
+# observation model derivative
+# x = [x,y,th].T
+# lm = [lmx,lmy].T
+def Jh(x, lm):
+    d = lm - x[:2, 0]
+    q = d.T @ d
+
+    jac_x = np.zeros((2, 3))
+    jac_x[0, 0] = -d[0, 0] / np.sqrt(q)
+    jac_x[0, 1] = -d[1, 0] / np.sqrt(q)
+    jac_x[1, 0] = d[1, 0] / q
+    jac_x[1, 1] = -d[0, 0] / q
+    jac_x[1, 2] = -1
+
+    jac_lm = np.zeros((2, 2))
+    jac_lm[0, 0] = d[0, 0] / np.sqrt(q)
+    jac_lm[0, 1] = d[1, 0] / np.sqrt(q)
+    jac_lm[1, 0] = -d[1, 0] / q
+    jac_lm[1, 1] = d[0, 0] / q
+
+    return np.hstack((jac_x, jac_lm))
+
+
+# miu : [x, y, th, lm1x, lm1y, lm2x, lm2y, ... ].T
+# sigma : covariance matrix
+# f  : motion model
+# Jf : motion model derivative
+# h  : observation model
+# Jh : observation model derivative
+# u  : controls = [v, w].T
+# z  : observations = real observations from sensors [lmx, lmy]
+# R  : motion noise
+# Q  : observation noise
 def ekf_slam_step(miu_, sigma_, u_, z_, R_, Q_):
 
     N_ = int((miu_.shape[0] - STATE_SIZE) / LM_SIZE)
@@ -38,18 +113,35 @@ def ekf_slam_step(miu_, sigma_, u_, z_, R_, Q_):
 
         mah_dist = np.zeros((1, N_ + 1))
         for k in range(N_):
-            z_expected_k = h(miu_bar[:STATE_SIZE, 0], miu_bar[STATE_SIZE + k * LM_SIZE : STATE_SIZE + (k + 1) * LM_SIZE, 0])
+            z_expected_k = h(
+                miu_bar[:STATE_SIZE, 0],
+                miu_bar[STATE_SIZE + k * LM_SIZE : STATE_SIZE + (k + 1) * LM_SIZE, 0],
+            )
 
             Fxk = np.zeros(STATE_SIZE + LM_SIZE, LM_SIZE * N_ + STATE_SIZE)
             Fxk[:STATE_SIZE, :STATE_SIZE] = np.eye(STATE_SIZE)
-            Fxk[STATE_SIZE:, STATE_SIZE + k * LM_SIZE : STATE_SIZE + (k + 1) * LM_SIZE] = np.eye(LM_SIZE)
+            Fxk[
+                STATE_SIZE:,
+                STATE_SIZE + k * LM_SIZE : STATE_SIZE + (k + 1) * LM_SIZE,
+            ] = np.eye(LM_SIZE)
 
-            Hk = H(miu_bar[:STATE_SIZE, 0], miu_bar[STATE_SIZE + k * LM_SIZE : STATE_SIZE + (k + 1) * LM_SIZE, 0]) @ Fxk
+            Hk = (
+                Jh(
+                    miu_bar[:STATE_SIZE, 0],
+                    miu_bar[
+                        STATE_SIZE + k * LM_SIZE : STATE_SIZE + (k + 1) * LM_SIZE,
+                        0,
+                    ],
+                )
+                @ Fxk
+            )
 
             psi_k = Hk @ sigma_bar @ Hk.T + Q_
 
             # Mahalanobis Distance
-            mah_dist[k] = (z_[i, :].T - z_expected_k).T @ np.linalg.pinv(psi_k) @ (z_[i, :].T - z_expected_k)
+            mah_dist[k] = (
+                (z_[i, :].T - z_expected_k).T @ np.linalg.pinv(psi_k) @ (z_[i, :].T - z_expected_k)
+            )
 
         mah_dist[N_] = MH_DIST_TH
 
@@ -58,25 +150,42 @@ def ekf_slam_step(miu_, sigma_, u_, z_, R_, Q_):
         N_ = np.max(N_, j)
         # create new landmark
         if N_ == j:
-            miu_bar = np.vstack(miu_bar, new_landmark_miu)
+            miu_bar = np.vstack((miu_bar, new_landmark_miu))
 
             sigma_bar = np.vstack(
                 (
                     np.hstack((sigma_bar, np.zeros((sigma_bar.shape[0], LM_SIZE)))),
-                    np.hstack((np.zeros((LM_SIZE, sigma_bar.shape[1])), np.eye(LM_SIZE))),
+                    np.hstack(
+                        (
+                            np.zeros((LM_SIZE, sigma_bar.shape[1])),
+                            np.eye(LM_SIZE),
+                        )
+                    ),
                 )
             )
 
         Fxj = np.zeros(STATE_SIZE + LM_SIZE, LM_SIZE * N_ + STATE_SIZE)
         Fxj[:STATE_SIZE, :STATE_SIZE] = np.eye(STATE_SIZE)
-        Fxj[STATE_SIZE:, STATE_SIZE + j * LM_SIZE : STATE_SIZE + (j + 1) * LM_SIZE] = np.eye(LM_SIZE)
+        Fxj[
+            STATE_SIZE:,
+            STATE_SIZE + j * LM_SIZE : STATE_SIZE + (j + 1) * LM_SIZE,
+        ] = np.eye(LM_SIZE)
 
-        Hj = H(miu_bar[:STATE_SIZE, 0], miu_bar[STATE_SIZE + k * LM_SIZE : STATE_SIZE + (k + 1) * LM_SIZE, 0]) @ Fxj
+        Hj = (
+            Jh(
+                miu_bar[:STATE_SIZE, 0],
+                miu_bar[STATE_SIZE + k * LM_SIZE : STATE_SIZE + (k + 1) * LM_SIZE, 0],
+            )
+            @ Fxj
+        )
         psi_j = Hj @ sigma_bar @ Hj.T + Q_
 
         K = sigma_bar @ Hj.T @ np.linalg.pinv(psi_j)
 
-        z_expected_j = h(miu_bar[:STATE_SIZE, 0], miu_bar[STATE_SIZE + k * LM_SIZE : STATE_SIZE + (k + 1) * LM_SIZE, 0])
+        z_expected_j = h(
+            miu_bar[:STATE_SIZE, 0],
+            miu_bar[STATE_SIZE + k * LM_SIZE : STATE_SIZE + (k + 1) * LM_SIZE, 0],
+        )
 
         miu_bar = miu_bar + K @ (z_[i, :] - z_expected_j)
         sigma_bar = (np.eye(np.shape(sigma_bar)) - K @ Hj) @ sigma_bar
