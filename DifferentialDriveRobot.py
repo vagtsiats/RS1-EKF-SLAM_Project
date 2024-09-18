@@ -1,57 +1,116 @@
 import numpy as np
+import helpers as hp
 
 
 class DifferentialDriveRobot:
-    state = np.zeros((3, 1))  # [x,y,theta]
-    thd_L = 0
-    thd_R = 0
-    axes = None
-    prevx = np.empty((3, 1))
+    odometry_poses = np.zeros((3, 1))  # [x,y,theta]
 
-    def __init__(self, d, r, state=None) -> None:
+    def __init__(self, d, r) -> None:
         self.d = d
         self.r = r
 
-        if state:
-            self.prevx = np.hstack((self.prevx, state.reshape(-1, 1)))
-            self.state = state
+        self.lidar_width = np.pi / 2
+        self.lidar_dist = 10
+        self.lidar_noise = 1e-3
+
+    def forwardKinematics_integration(self, pose, control, dt=0.1):
+
+        kin = np.array(
+            [
+                [(self.r / 2) * np.cos(pose[2][0]), (self.r / 2) * np.cos(pose[2][0])],
+                [(self.r / 2) * np.sin(pose[2][0]), (self.r / 2) * np.sin(pose[2][0])],
+                [-self.r / (2 * self.d), self.r / (2 * self.d)],
+            ]
+        )
+
+        return pose + kin @ control * dt
+
+    # used for odometry
+    def bodyTwist_integration(self, pose, control, dt):
+        H_odom = np.array(
+            [
+                [self.r / 2.0, self.r / 2.0],
+                [0.0, 0.0],
+                [-self.r / (2.0 * self.d), self.r / (2.0 * self.d)],
+            ]
+        )
+        Vb = H_odom @ control
+
+        R = np.array(
+            [
+                [np.cos(pose[2, 0]), -np.sin(pose[2, 0]), 0.0],
+                [np.sin(pose[2, 0]), np.cos(pose[2, 0]), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+
+        if abs(Vb[2, 0]) < 1e-6:
+            return pose + R @ Vb * dt
         else:
-            self.prevx = np.hstack((self.prevx, self.state.reshape(-1, 1)))
+            vx = Vb[0, 0]
+            vy = Vb[1, 0]
+            omega = Vb[2, 0]
+            dp = np.array(
+                [
+                    [(vx * np.sin(omega) + vy * (np.cos(omega) - 1.0)) / omega],
+                    [(vy * np.sin(omega) + vx * (1.0 - np.cos(omega))) / omega],
+                    [omega],
+                ]
+            )
+            return pose + R @ dp * dt
 
-    # forward differential kinematics function
-    def diffkin(self, control):
-        th = self.state[0][0]
-        r_2 = self.r / 2
-        d = self.d
-
-        control.reshape(1, -1)
-
-        mat = np.array([[-r_2 / d, r_2 / d], [r_2 * np.cos(th), r_2 * np.cos(th)], [r_2 * np.sin(th), r_2 * np.sin(th)]])
-
-        c = self.trim_control(control)
-
-        return (mat @ c).reshape(-1, 1)
-
-    def odometry(self):
-        pass
-
-    def visualize(self, ax=None):
-        if self.axes == None:
-            # self.fig, self.ax = plt.
-            pass
-        pass
-
-    def trim_control(self, control):
+    def __trim_control(self, control):
         return np.clip(control, -5, 5)
 
-    def step(self, dt=0.1):
-        dx = self.diffkin(np.array([0.1, 1]))
+    # control = [uL, uR]
+    def step(self, control, dt=0.1):
 
-        self.state += dx * dt
+        self.odometry_poses = np.hstack(
+            (
+                self.odometry_poses,
+                self.bodyTwist_integration(
+                    self.odometry_poses[:, -1].reshape(-1, 1), control=control, dt=dt
+                ),
+            )
+        )
 
-        self.prevx = np.hstack((self.prevx, self.state.reshape(-1, 1)))
+    def get_odometry(self):
+        return self.odometry_poses
 
-        return self.state
+    def get_controls_from_odometry(self):
+        dx = (
+            self.odometry_poses[:, -1].reshape(-1, 1)[0, 0]
+            - self.odometry_poses[:, -2].reshape(-1, 1)[0, 0]
+        )
+        dy = (
+            self.odometry_poses[:, -1].reshape(-1, 1)[1, 0]
+            - self.odometry_poses[:, -2].reshape(-1, 1)[1, 0]
+        )
+        dtheta = hp.angle_dist(
+            self.odometry_poses[:, -1].reshape(-1, 1)[2, 0],
+            self.odometry_poses[:, -2].reshape(-1, 1)[2, 0],
+        )
+        return np.array([[dx, dy, dtheta]]).T
 
-    def get_state(self):
-        return self.state
+    def get_lidar_measurements(self, pose, lm_map):
+
+        detects = []
+
+        theta = pose[2, 0]  # heading of the robot
+        for k in range(len(lm_map)):
+            lx = lm_map[k][0] + np.random.randn() * self.lidar_noise
+            ly = lm_map[k][1] + np.random.randn() * self.lidar_noise
+            xx = lx - pose[1, 0]
+            yy = ly - pose[2, 0]
+            rel = np.arctan2(yy, xx)
+            rel = hp.angle_dist(rel, theta)
+            r = np.sqrt(xx**2 + yy**2)
+
+            if (
+                rel >= -self.lidar_width / 2.0
+                and rel <= self.lidar_width / 2.0
+                and r <= self.lidar_dist
+            ):
+
+                detects += [np.array([[r, rel]])]  # (distance, angle difference)
+        return detects
