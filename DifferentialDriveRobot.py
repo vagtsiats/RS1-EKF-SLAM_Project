@@ -9,9 +9,9 @@ class DifferentialDriveRobot:
         self.d = d
         self.r = r
 
-        self.lidar_width = np.pi / 2
-        self.lidar_dist = 10
-        self.lidar_noise = 1e-3
+        self.lidar_width = np.pi
+        self.lidar_dist = 5
+        self.lidar_noise = 10e-3
 
     def forwardKinematics_integration(self, pose, control, dt=0.1):
 
@@ -68,9 +68,7 @@ class DifferentialDriveRobot:
         self.odometry_poses = np.hstack(
             (
                 self.odometry_poses,
-                self.bodyTwist_integration(
-                    self.odometry_poses[:, -1].reshape(-1, 1), control=control, dt=dt
-                ),
+                self.bodyTwist_integration(self.odometry_poses[:, -1].reshape(-1, 1), control=control, dt=dt),
             )
         )
 
@@ -78,14 +76,8 @@ class DifferentialDriveRobot:
         return self.odometry_poses
 
     def get_controls_from_odometry(self):
-        dx = (
-            self.odometry_poses[:, -1].reshape(-1, 1)[0, 0]
-            - self.odometry_poses[:, -2].reshape(-1, 1)[0, 0]
-        )
-        dy = (
-            self.odometry_poses[:, -1].reshape(-1, 1)[1, 0]
-            - self.odometry_poses[:, -2].reshape(-1, 1)[1, 0]
-        )
+        dx = self.odometry_poses[:, -1].reshape(-1, 1)[0, 0] - self.odometry_poses[:, -2].reshape(-1, 1)[0, 0]
+        dy = self.odometry_poses[:, -1].reshape(-1, 1)[1, 0] - self.odometry_poses[:, -2].reshape(-1, 1)[1, 0]
         dtheta = hp.angle_dist(
             self.odometry_poses[:, -1].reshape(-1, 1)[2, 0],
             self.odometry_poses[:, -2].reshape(-1, 1)[2, 0],
@@ -97,20 +89,16 @@ class DifferentialDriveRobot:
         detects = []
 
         theta = pose[2, 0]  # heading of the robot
-        for k in range(len(lm_map)):
-            lx = lm_map[k][0] + np.random.randn() * self.lidar_noise
-            ly = lm_map[k][1] + np.random.randn() * self.lidar_noise
-            xx = lx - pose[1, 0]
-            yy = ly - pose[2, 0]
+        for lm in lm_map:
+            lx = lm[0] + np.random.randn() * self.lidar_noise
+            ly = lm[1] + np.random.randn() * self.lidar_noise
+            xx = lx - pose[0, 0]
+            yy = ly - pose[1, 0]
             rel = np.arctan2(yy, xx)
             rel = hp.angle_dist(rel, theta)
             r = np.sqrt(xx**2 + yy**2)
 
-            if (
-                rel >= -self.lidar_width / 2.0
-                and rel <= self.lidar_width / 2.0
-                and r <= self.lidar_dist
-            ):
+            if rel >= -self.lidar_width / 2.0 and rel <= self.lidar_width / 2.0 and r <= self.lidar_dist:
 
                 detects += [np.array([[r, rel]])]  # (distance, angle difference)
         return detects
