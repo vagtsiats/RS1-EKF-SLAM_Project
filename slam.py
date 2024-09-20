@@ -1,9 +1,6 @@
 import numpy as np
 import helpers as hp
-
-MH_DIST_TH = 0.5  # Threshold of Mahalanobis distance for data association.
-STATE_SIZE = 3  # State size [x,y,th]
-LM_SIZE = 2  # LM state size [x,y]
+from definitions import *
 
 
 # motion model
