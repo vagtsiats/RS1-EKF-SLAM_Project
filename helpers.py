@@ -24,7 +24,8 @@ def angle_dist(b, a):
 
 def generate_random_points(n, xlim, ylim):
 
-    np.random.seed(SEED)
+    if SEED:
+        np.random.seed(SEED)
 
     x_random = np.random.uniform(xlim[0], xlim[1], n)
     y_random = np.random.uniform(ylim[0], ylim[1], n)

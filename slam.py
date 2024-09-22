@@ -3,13 +3,14 @@ import helpers as hp
 from definitions import *
 
 
-# motion model
+# motion model -> odometry model
 # x = [x,y,th].T
 # u = [dx,dy,dth].T
 def f(x, u, dt=0.1):
     # v = u[0, 0]
     # w = u[2, 0]
 
+    # velocity model
     # return np.array(
     #     [
     #         [(v / w) * (-np.sin(x[2, 0]) + np.sin(x[2, 0] + w * dt))],
@@ -99,14 +100,14 @@ def ekf_slam_step(miu_, sigma_, u_, z_, R_, Q_):
 
     N_ = calc_N(miu_)
 
-    # prediction
+    # STEP 1: prediction
     Fx = np.hstack((np.eye(STATE_SIZE), np.zeros((STATE_SIZE, LM_SIZE * N_))))
-
     miu_bar = miu_ + Fx.T @ f(miu_, u_)
+
     Gt = np.eye(STATE_SIZE + N_ * LM_SIZE) + Fx.T @ Jf(miu_, u_) @ Fx
     sigma_bar = Gt @ sigma_ @ Gt.T + Fx.T @ R_ @ Fx
 
-    # correction
+    # STEP 2: correction
     for z_lm in z_:
         p = miu_bar[:STATE_SIZE, 0].reshape(-1, 1)
         p_x = miu_bar[0, 0]
@@ -122,60 +123,40 @@ def ekf_slam_step(miu_, sigma_, u_, z_, R_, Q_):
 
         mh_dist = []
         for k in range(N_):
-
             lm_k = miu_bar[STATE_SIZE + k * LM_SIZE : STATE_SIZE + (k + 1) * LM_SIZE, 0].reshape(-1, 1)
-
             z_expected_k = h(p, lm_k)
 
             Fxk = Fxi(k, N_)
-
             Hk = Jh(p, lm_k) @ Fxk
-
             psi_k = Hk @ sigma_bar @ Hk.T + Q_
 
             # Mahalanobis Distance
             mh_dist.append(((z_lm.T - z_expected_k).T @ np.linalg.inv(psi_k) @ (z_lm.T - z_expected_k))[0, 0])
 
         mh_dist.append(MH_DIST_TH)
-
         j = np.argmin(mh_dist)  # MaximumLikelihood correspondence selection
+
+        lm_j = miu_bar[STATE_SIZE + j * LM_SIZE : STATE_SIZE + (j + 1) * LM_SIZE, 0].reshape(-1, 1)
+        z_expected_j = h(p, lm_j)
 
         # create new landmark
         if N_ == j:
             miu_bar = np.vstack((miu_bar, new_landmark_miu))
-
             sigma_bar = np.vstack(
                 (
                     np.hstack((sigma_bar, np.zeros((sigma_bar.shape[0], LM_SIZE)))),
-                    np.hstack(
-                        (
-                            np.zeros((LM_SIZE, sigma_bar.shape[1])),
-                            np.eye(LM_SIZE),
-                        )
-                    ),
+                    np.hstack((np.zeros((LM_SIZE, sigma_bar.shape[1])), np.eye(LM_SIZE))),
                 )
             )
 
         N_ = calc_N(miu_bar)
 
         Fxj = Fxi(j, N_)
-
-        Hj = (
-            Jh(
-                miu_bar[:STATE_SIZE, 0].reshape(-1, 1),
-                miu_bar[STATE_SIZE + j * LM_SIZE : STATE_SIZE + (j + 1) * LM_SIZE, 0].reshape(-1, 1),
-            )
-            @ Fxj
-        )
-
+        Hj = Jh(p, lm_j) @ Fxj
         psi_j = Hj @ sigma_bar @ Hj.T + Q_
 
+        # Kalman Gain
         K = sigma_bar @ Hj.T @ np.linalg.pinv(psi_j)
-
-        z_expected_j = h(
-            miu_bar[:STATE_SIZE, 0].reshape(-1, 1),
-            miu_bar[STATE_SIZE + j * LM_SIZE : STATE_SIZE + (j + 1) * LM_SIZE, 0].reshape(-1, 1),
-        )
 
         miu_bar = miu_bar + K @ (z_lm.T - z_expected_j)
         sigma_bar = (np.eye(np.shape(miu_bar)[0]) - K @ Hj) @ sigma_bar

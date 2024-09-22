@@ -6,9 +6,11 @@ from definitions import *
 class DifferentialDriveRobot:
     odometry_poses = np.zeros((3, 1))  # [x,y,theta]
 
-    def __init__(self, d, r) -> None:
+    def __init__(self, d, r, initial_pose=None) -> None:
         self.wheel_base = d
         self.wheel_radius = r
+        if np.all(initial_pose) != None:
+            self.odometry_poses = np.copy(initial_pose)
 
     def forwardKinematics(self, pose, control):
 
@@ -23,7 +25,7 @@ class DifferentialDriveRobot:
         return kin @ control
 
     # used for odometry
-    def bodyTwist(self, pose, control):
+    def bodyTwist_integration(self, pose, control, dt):
         H_odom = np.array(
             [
                 [self.wheel_radius / 2.0, self.wheel_radius / 2.0],
@@ -42,7 +44,7 @@ class DifferentialDriveRobot:
         )
 
         if abs(Vb[2, 0]) < 1e-6:
-            return R @ Vb
+            return pose + R @ Vb * dt
         else:
             vx = Vb[0, 0]
             vy = Vb[1, 0]
@@ -54,12 +56,12 @@ class DifferentialDriveRobot:
                     [omega],
                 ]
             )
-            return R @ dp
+            return pose + R @ dp * dt
 
-    def __trim_control(self, control):
+    def __trim_control(self, control, max_value):
 
         # Find the largest ratio (if greater than 1, scale)
-        max_ratio = np.max(abs(control) / 10)
+        max_ratio = np.max(abs(control) / max_value)
         if max_ratio > 1:
             control = control / max_ratio
 
@@ -75,23 +77,23 @@ class DifferentialDriveRobot:
         distance_error = (d.T @ d)[0, 0]
         orientation_error = hp.angle_dist(np.arctan2(d[1, 0], d[0, 0]), current_pose[2, 0])
 
-        v = np.clip(distance_error, -1, 1) * 3
-        w = np.clip(orientation_error, -np.pi, np.pi) * 10
+        v = self.__trim_control(distance_error, 1) * 5
+        w = self.__trim_control(orientation_error, np.pi) * 20
 
         # Compute wheel angular velocities
         control = np.zeros((2, 1))
         control[0, 0] = (v - w * self.wheel_base / 2) / self.wheel_radius
         control[1, 0] = (v + w * self.wheel_base / 2) / self.wheel_radius
 
-        return self.__trim_control(control)
+        return self.__trim_control(control, 10)
 
-    # control = [uL, uR]
-    def step(self, control, dt=0.1):
+    # u = [uL, uR] : odometric data (e.x. from encoders)
+    def odometry(self, u, dt=0.1):
 
         self.odometry_poses = np.hstack(
             (
                 self.odometry_poses,
-                hp.RK4(self.bodyTwist, self.odometry_poses[:, -1].reshape(-1, 1), u=control, dt=dt),
+                self.bodyTwist_integration(self.odometry_poses[:, -1].reshape(-1, 1), control=u, dt=dt),
             )
         )
 
