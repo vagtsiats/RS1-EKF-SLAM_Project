@@ -136,9 +136,6 @@ def ekf_slam_step(miu_, sigma_, u_, z_, R_, Q_):
         mh_dist.append(MH_DIST_TH)
         j = np.argmin(mh_dist)  # MaximumLikelihood correspondence selection
 
-        lm_j = miu_bar[STATE_SIZE + j * LM_SIZE : STATE_SIZE + (j + 1) * LM_SIZE, 0].reshape(-1, 1)
-        z_expected_j = h(p, lm_j)
-
         # create new landmark
         if N_ == j:
             miu_bar = np.vstack((miu_bar, new_landmark_miu))
@@ -150,6 +147,9 @@ def ekf_slam_step(miu_, sigma_, u_, z_, R_, Q_):
             )
 
         N_ = calc_N(miu_bar)
+
+        lm_j = miu_bar[STATE_SIZE + j * LM_SIZE : STATE_SIZE + (j + 1) * LM_SIZE, 0].reshape(-1, 1)
+        z_expected_j = h(p, lm_j)
 
         Fxj = Fxi(j, N_)
         Hj = Jh(p, lm_j) @ Fxj
